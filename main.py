@@ -60,7 +60,8 @@ if __name__ == '__main__':
               'image_ends': torch.tensor([tokenizer('</image>')['input_ids']] * bs, dtype=torch.int),
               'audio_starts': torch.tensor([tokenizer('<audio>')['input_ids']] * bs, dtype=torch.int),
               'audio_ends': torch.tensor([tokenizer('</audio>')['input_ids']] * bs, dtype=torch.int),
-              'input_ids' : torch.tensor([tokenizer('<text>')['input_ids']] * bs, dtype=torch.int)
+              'input_ids' : torch.tensor([tokenizer('<text>')['input_ids']] * bs, dtype=torch.int),
+              'input_ide': torch.tensor([tokenizer('</text>')['input_ids']] * bs, dtype=torch.int)
               }
 
     inputs = {k: inputs[k].to(device) for k in inputs}
@@ -98,7 +99,7 @@ if __name__ == '__main__':
 
     embed_tokens = nn.Embedding(whisper_config.vocab_size, 256).to(device)
 
-    text_embeddings = embed_tokens(inputs['input_ids'])
+    text_embeddings = embed_tokens(inputs['input_ids'])  # (1,3,256)
 
     token_embeddings = embed_tokens.weight.unsqueeze(0).repeat(
         text_embeddings.size(0), 1, 1).transpose(0, 1)
@@ -114,11 +115,9 @@ if __name__ == '__main__':
 
 
     audio_inputs = torch.cat([torch.cat([audio_starts, audio_features], dim=1), audio_ends], dim=1)
+    # (1,1504,256)
 
-    text_embeddings = torch.cat(
-        [torch.cat([text_embeddings[:, 0, :].unsqueeze(1), audio_inputs], dim=1), text_embeddings[:, 1:, :]],
-        dim=1)
-
+    text_embeddings = torch.cat([text_embeddings, audio_inputs], dim=1)
     # torch.FloatTensor of shape (batch_size, sequence_length, hidden_size)
     # (1, 1507, 256)
 
@@ -134,13 +133,11 @@ if __name__ == '__main__':
     image_inputs = torch.cat([torch.cat([image_starts, image_features], dim=1), image_ends], dim=1)
 
     text_embeddings = torch.cat(
-        [torch.cat([text_embeddings[:, 0, :].unsqueeze(1), image_inputs], dim=1),
-         text_embeddings[:, 1:, :]], dim=1)
+        [torch.cat([text_embeddings, image_inputs], dim=1),
+         embed_tokens(inputs['input_ide'])], dim=1)
 
     # torch.FloatTensor of shape (batch_size, sequence_length, hidden_size)
-    # (1, 1561, 256)
-
-    pdb.set_trace()
+    # (1, 1564, 256)
 
     batch_size = 1
     sequence_length = text_embeddings.shape[1]
@@ -151,7 +148,3 @@ if __name__ == '__main__':
     input_tensor = text_embeddings
     output = model(input_tensor)
     print(output.shape)  # Should be [batch_size, num_classes]
-
-
-
-
