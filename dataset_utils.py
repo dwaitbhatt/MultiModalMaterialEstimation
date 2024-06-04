@@ -1,5 +1,6 @@
 import whisper
 import glob
+import torch
 from torch.utils.data import Dataset, DataLoader
 import torchaudio
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, ToPILImage, Normalize
@@ -45,7 +46,8 @@ class GreatestHitsDataset(Dataset):
             self.all_material_names.update([frame[1] for frame in frame_info])
 
         self.all_material_names = sorted(list(self.all_material_names))
-        self.material_names_dict = {name: i for i, name in enumerate(self.all_material_names)}
+        self.mat_to_ind = {name: i for i, name in enumerate(self.all_material_names)}
+        self.ind_to_mat = {i: name for i, name in enumerate(self.all_material_names)}
     
     def __len__(self):
         total_len = 0
@@ -62,14 +64,16 @@ class GreatestHitsDataset(Dataset):
         
         date_time = key
         # frames, audio, metadata = torchvision.io.read_video(f"./vis-data-256/{date_time}_denoised.mp4")
+        # Loading single frame with cv2 for faster frame access compared to loading whole video
         cap = cv2.VideoCapture(self.root_dir + f"/{date_time}_denoised.mp4")
         audio = whisper.load_audio(self.root_dir + f"/{date_time}_denoised.wav", self.audio_rate)
         
         frames_info = self.times_info[date_time]
         frame_timestamp = frames_info[idx][0]
         material_name = frames_info[idx][1]
+        material_index = self.mat_to_ind[material_name]
+        material_index = torch.tensor(material_index)
 
-        # Whisper needs 5 seconds of audio (default for pad_or_trim is 480k samples, i.e., 5 seconds at 96k samples/sec)
         audio_start_time = frame_timestamp - self.audio_length / 2
         audio_start_idx = int(audio_start_time * self.audio_rate)
         audio = audio[audio_start_idx : audio_start_idx + self.audio_rate * self.audio_length]
@@ -84,7 +88,8 @@ class GreatestHitsDataset(Dataset):
         frame = self.transform(frame)
         
         cap.release()
-        return {"images": frame, "audios": mel, "audios_raw":audio, "materials": material_name}
+        # return {"images": frame, "audios": mel, "audios_raw":audio, "materials": material_index}
+        return {"images": frame, "audios": mel, "materials": material_index}
     
 
 # Create DataLoader

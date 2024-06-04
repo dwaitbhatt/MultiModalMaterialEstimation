@@ -134,9 +134,10 @@ def dummy_test():
 
 def train_model(dataloader, num_epochs=10):
     bs = dataloader.batch_size
-    mat_to_ind = dataloader.dataset.material_names_dict
+    mat_to_ind = dataloader.dataset.mat_to_ind
     num_classes = len(mat_to_ind)
     model = ImageAudioModel(num_classes=num_classes)
+    model = model.to(device)
     
     tokenizer = AutoTokenizer.from_pretrained("togethercomputer/LLaMA-2-7B-32K")
     inputs_common = {
@@ -153,35 +154,40 @@ def train_model(dataloader, num_epochs=10):
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     model.train()
     
+    loss_values = []
     prev_time = time.time()
-    pbar = tqdm(total=num_epochs*len(dataloader), desc="Training")
+    pbar = tqdm(total=num_epochs*len(dataloader), desc="Training started")
     for epoch in range(num_epochs):
         for i, data in enumerate(dataloader):
-            pbar.update(1)
-            inputs = {k: data[k].to(device) for k in data}
-            gt = [mat_to_ind[mat] for mat in data["materials"]]
+            data = {k: data[k].to(device) for k in data}    
             
             optimizer.zero_grad()
-            output = model(inputs, inputs_common)
-            loss = criterion(output, gt)
+            output = model(data, inputs_common)
+            loss = criterion(output, data["materials"])
             loss.backward()
             optimizer.step()
-            print(f"Epoch {epoch+1}, Batch {i+1}, Loss: {loss.item()}")
-            
-            # Save model every 15 mins to avoid losing progress
-            curr_time = time.time()
-            if curr_time - prev_time > 900:
-                prev_time = curr_time
-                torch.save(model.state_dict(), f"model_{epoch}_{i}.pth")
 
+            loss_values.append(loss.item())
+            pbar.update(1)
+            pbar.set_description(f"Epoch {epoch+1}, Batch {i+1}, Loss: {loss.item():.4f}")
+            
+            # Saving progress every 5 mins
+            curr_time = time.time()
+            if curr_time - prev_time > 300:
+                prev_time = curr_time
+                print(f"Epoch {epoch+1}, Batch {i+1}, Loss: {loss.item()}")
+                torch.save(model.state_dict(), f"model_{epoch}_{i}.pth")
+                torch.save(loss_values, "loss_history.pth")
 
     torch.save(model.state_dict(), "final_model.pth")
+    torch.save(loss_values, "loss_history.pth")
+    
     return model
 
 if __name__ == '__main__':
     # dummy_test()
     
-    batch_size = 64
+    batch_size = 1
     dataloader = create_dataloader(root_dir="/home/GreatestHits/vis-data-256", batch_size=batch_size)
     
     train_model(dataloader)
