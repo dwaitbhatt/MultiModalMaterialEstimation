@@ -1,26 +1,14 @@
-import pdb
 from transformers import WhisperConfig, WhisperModel, CLIPConfig, CLIPModel, AutoTokenizer
 import whisper
 import torch
-import os
-from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
-from PIL import Image
+import torch.nn as nn
+from dataset_utils import _transform, create_dataloader
+import time
+from tqdm.auto import tqdm
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import torch.nn as nn
 
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-device = torch.device("cpu")
-
-def _transform(n_px):
-    return Compose([
-        Resize(n_px),
-        CenterCrop(n_px),
-        _convert_image_to_rgb,
-        ToTensor(),
-        Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)),
-    ])
-
-def _convert_image_to_rgb(image):
-    return image.convert("RGB")
 
 class TextClassificationModel(nn.Module):
     def __init__(self, hidden_size, num_classes):
@@ -68,20 +56,19 @@ class ImageAudioModel(nn.Module):
 
         self.embed_tokens = nn.Embedding(self.whisper_config.vocab_size, 256).to(device)
         self.num_classes = num_classes
+        self.final_classifier = TextClassificationModel(256, num_classes).to(device)
 
-
-
-    def forward(self, inputs):
+    def forward(self, inputs, inputs_common):
         image_features = self.image_encoder.visual_projection(self.image_encoder.vision_model(inputs['images']).last_hidden_state)
         audio_features = self.audio_encoder.encoder(inputs['audios']).last_hidden_state
 
-        text_embeddings = self.embed_tokens(inputs['input_ids'])
+        text_embeddings = self.embed_tokens(inputs_common['input_ids'])
 
         token_embeddings = self.embed_tokens.weight.unsqueeze(0).repeat(
             text_embeddings.size(0), 1, 1).transpose(0, 1)
 
-        audio_starts = self.embed_tokens(inputs['audio_starts'])
-        audio_ends = self.embed_tokens(inputs['audio_ends'])
+        audio_starts = self.embed_tokens(inputs_common['audio_starts'])
+        audio_ends = self.embed_tokens(inputs_common['audio_ends'])
 
         audio_features = self.project_audio(audio_features.transpose(1, 2).contiguous()).transpose(1, 2).contiguous()
         audio_features = self.transform_audio_to_hidden(audio_features)
@@ -92,8 +79,8 @@ class ImageAudioModel(nn.Module):
         audio_inputs = torch.cat([torch.cat([audio_starts, audio_features], dim=1), audio_ends], dim=1)
         text_embeddings = torch.cat([text_embeddings, audio_inputs], dim=1)
 
-        image_starts = self.embed_tokens(inputs['image_starts'])
-        image_ends = self.embed_tokens(inputs['image_ends'])
+        image_starts = self.embed_tokens(inputs_common['image_starts'])
+        image_ends = self.embed_tokens(inputs_common['image_ends'])
 
         image_features = self.project_image(image_features.transpose(1, 2).contiguous()).transpose(1, 2).contiguous()
 
@@ -105,39 +92,96 @@ class ImageAudioModel(nn.Module):
 
         text_embeddings = torch.cat(
             [torch.cat([text_embeddings, image_inputs], dim=1),
-             self.embed_tokens(inputs['input_ide'])], dim=1)
+             self.embed_tokens(inputs_common['input_ide'])], dim=1)
 
-        hidden_size = text_embeddings.shape[2]
-        model = TextClassificationModel(hidden_size, self.num_classes)
         input_tensor = text_embeddings
-        output = model(input_tensor)
+        output = self.final_classifier(input_tensor)
         return output
 
-if __name__ == '__main__':
 
-    audio = whisper.load_audio(".\\aud.wav")
+def dummy_test():
+    audio = whisper.load_audio("./aud.wav")
     audio = whisper.pad_or_trim(audio)
     mel = whisper.log_mel_spectrogram(audio)
     all_audio_mels = mel.unsqueeze(0) # (1, 80, 3000)
 
     preprocess = _transform(224)
-    frame = preprocess(Image.open(".\\img.JPG"))
+    
+    import matplotlib.pyplot as plt
+    frame = preprocess(plt.imread("./img.jpg"))
     frame = frame.unsqueeze(0)
 
-    tokenizer = AutoTokenizer.from_pretrained("togethercomputer/LLaMA-2-7B-32K")
     bs = 1
-
-    inputs = {'audios': all_audio_mels, 'images': frame,
-              'image_starts': torch.tensor([tokenizer('<image>')['input_ids']] * bs, dtype=torch.int),
-              'image_ends': torch.tensor([tokenizer('</image>')['input_ids']] * bs, dtype=torch.int),
-              'audio_starts': torch.tensor([tokenizer('<audio>')['input_ids']] * bs, dtype=torch.int),
-              'audio_ends': torch.tensor([tokenizer('</audio>')['input_ids']] * bs, dtype=torch.int),
-              'input_ids' : torch.tensor([tokenizer('<text>')['input_ids']] * bs, dtype=torch.int),
-              'input_ide': torch.tensor([tokenizer('</text>')['input_ids']] * bs, dtype=torch.int)
-              }
-
+    tokenizer = AutoTokenizer.from_pretrained("togethercomputer/LLaMA-2-7B-32K")
+    inputs_common = {
+                        'image_starts': torch.tensor([tokenizer('<image>')['input_ids']] * bs, dtype=torch.int),
+                        'image_ends': torch.tensor([tokenizer('</image>')['input_ids']] * bs, dtype=torch.int),
+                        'audio_starts': torch.tensor([tokenizer('<audio>')['input_ids']] * bs, dtype=torch.int),
+                        'audio_ends': torch.tensor([tokenizer('</audio>')['input_ids']] * bs, dtype=torch.int),
+                        'input_ids' : torch.tensor([tokenizer('<text>')['input_ids']] * bs, dtype=torch.int),
+                        'input_ide': torch.tensor([tokenizer('</text>')['input_ids']] * bs, dtype=torch.int)
+                    }
+    inputs = {'audios': all_audio_mels, 'images': frame}
+    
     inputs = {k: inputs[k].to(device) for k in inputs}
-
+    inputs_common = {k: inputs_common[k].to(device) for k in inputs_common}
+    
     model = ImageAudioModel(num_classes=30)
-    output = model(inputs)
+    model = model.to(device)
+    output = model(inputs, inputs_common)
     print(output.shape)  # Should be [batch_size, num_classes]
+
+
+def train_model(dataloader, num_epochs=10):
+    bs = dataloader.batch_size
+    mat_to_ind = dataloader.dataset.material_names_dict
+    num_classes = len(mat_to_ind)
+    model = ImageAudioModel(num_classes=num_classes)
+    
+    tokenizer = AutoTokenizer.from_pretrained("togethercomputer/LLaMA-2-7B-32K")
+    inputs_common = {
+                        'image_starts': torch.tensor([tokenizer('<image>')['input_ids']] * bs, dtype=torch.int),
+                        'image_ends': torch.tensor([tokenizer('</image>')['input_ids']] * bs, dtype=torch.int),
+                        'audio_starts': torch.tensor([tokenizer('<audio>')['input_ids']] * bs, dtype=torch.int),
+                        'audio_ends': torch.tensor([tokenizer('</audio>')['input_ids']] * bs, dtype=torch.int),
+                        'input_ids' : torch.tensor([tokenizer('<text>')['input_ids']] * bs, dtype=torch.int),
+                        'input_ide': torch.tensor([tokenizer('</text>')['input_ids']] * bs, dtype=torch.int)
+                    }
+    inputs_common = {k: inputs_common[k].to(device) for k in inputs_common}    
+    
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
+    model.train()
+    
+    prev_time = time.time()
+    pbar = tqdm(total=num_epochs*len(dataloader), desc="Training")
+    for epoch in range(num_epochs):
+        for i, data in enumerate(dataloader):
+            pbar.update(1)
+            inputs = {k: data[k].to(device) for k in data}
+            gt = [mat_to_ind[mat] for mat in data["materials"]]
+            
+            optimizer.zero_grad()
+            output = model(inputs, inputs_common)
+            loss = criterion(output, gt)
+            loss.backward()
+            optimizer.step()
+            print(f"Epoch {epoch+1}, Batch {i+1}, Loss: {loss.item()}")
+            
+            # Save model every 15 mins to avoid losing progress
+            curr_time = time.time()
+            if curr_time - prev_time > 900:
+                prev_time = curr_time
+                torch.save(model.state_dict(), f"model_{epoch}_{i}.pth")
+
+
+    torch.save(model.state_dict(), "final_model.pth")
+    return model
+
+if __name__ == '__main__':
+    # dummy_test()
+    
+    batch_size = 64
+    dataloader = create_dataloader(root_dir="/home/GreatestHits/vis-data-256", batch_size=batch_size)
+    
+    train_model(dataloader)
