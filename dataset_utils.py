@@ -1,7 +1,7 @@
 import whisper
 import glob
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 import torchaudio
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, ToPILImage, Normalize
 import cv2
@@ -93,31 +93,40 @@ class GreatestHitsDataset(Dataset):
     
 
 # Create DataLoader
-def create_dataloader(root_dir="./vis-data-256", batch_size=4):
+def create_dataloaders(root_dir="./vis-data-256", batch_size=4, val_ratio=0.05):
     dataset = GreatestHitsDataset(root_dir)
     print(f"\nDataset size: {len(dataset)}\n")
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-    return dataloader
+
+    val_size = int(val_ratio * len(dataset))
+    train_size = len(dataset) - val_size
+    train_set, val_set = random_split(dataset, [train_size, val_size])
+    
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=True)
+
+    return train_loader, val_loader
 
 
 if __name__ == '__main__':
     batch_size = 4
     
     start_time = time.time()
-    dataloader = create_dataloader(root_dir="/home/GreatestHits/vis-data-256", batch_size=batch_size)
+    train_loader, _ = create_dataloaders(root_dir="/home/GreatestHits/vis-data-256", batch_size=batch_size)
     print(f"Time taken to create dataloader (with batch size {batch_size}): {time.time() - start_time:.2f} seconds")
     
     start_time = time.time()
-    for i, data in enumerate(dataloader):
-        print(data["images"].shape, data["audios"].shape, data["audios_raw"].shape, data["materials"])
+    for i, data in enumerate(train_loader):
+        print([data[k].shape for k in data])
         print(f"\nTime taken to load batch {i+1}: {time.time() - start_time:.2f} seconds")
 
         plt.imsave(f"image_{i+1}.jpg", data["images"][0].permute(1, 2, 0).numpy().clip(0, 1))
-        torchaudio.save(f"audio_{i+1}.wav", data["audios_raw"][0].unsqueeze(0), 96000)
-        mel = data["audios"][0].numpy()
 
+        mel = data["audios"][0].numpy()
         plt.imsave(f"mel_{i+1}.jpg", mel, cmap="viridis")
         # print(f"Min, Max for mel: {mel.min(), mel.max()}")
+    
+        if "audios_raw" in data:
+            torchaudio.save(f"audio_{i+1}.wav", data["audios_raw"][0].unsqueeze(0), 96000)
                 
         if i == 1:
             break
