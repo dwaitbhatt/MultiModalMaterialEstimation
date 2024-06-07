@@ -1,4 +1,4 @@
-from transformers import WhisperConfig, WhisperModel, CLIPConfig, CLIPModel, AutoTokenizer, AutoModel
+from transformers import WhisperConfig, WhisperModel, CLIPConfig, CLIPModel, AutoTokenizer, AutoModel, AutoForCausalLM
 import whisper
 import torch
 import torch.nn as nn
@@ -36,6 +36,7 @@ class ImageAudioModel(nn.Module):
         # self.image_encoder = AutoModel.from_pretrained("nvidia/E-RADIO", trust_remote_code=True).to(device)
         self.image_encoder_name = "openai/clip-vit-base-patch32"
         self.audio_encoder_name = "openai/whisper-base"
+        self.llm_name = "llmware/bling-sheared-llama-1.3b-0.1"
         self.image_encoder = CLIPModel.from_pretrained(self.image_encoder_name).to(device)
         self.audio_encoder = WhisperModel.from_pretrained(self.audio_encoder_name).to(device)
 
@@ -46,7 +47,10 @@ class ImageAudioModel(nn.Module):
         self.audio_seq_len = 1500
         
         self.aligned_seq_len = 32
-        self.llm_dim = 256
+    
+        llm = AutoForCausalLM.from_pretrained(self.llm_name)
+        self.embed_tokens = llm.model.embed_tokens
+        self.llm_dim = self.embed_tokens.shape[1]
 
         self.project_image = nn.Conv1d(self.image_seq_len, self.aligned_seq_len,
                                        kernel_size=1, stride=1).to(device)
@@ -58,7 +62,7 @@ class ImageAudioModel(nn.Module):
                                                    self.llm_dim).to(device)
         self.transform_audio_to_hidden = nn.Linear(self.audio_h_dim,
                                                    self.llm_dim).to(device)
-
+        
         self.image_align_attention = nn.MultiheadAttention(256,
                                                            4 * 2,
                                                            dropout=0,
@@ -70,7 +74,6 @@ class ImageAudioModel(nn.Module):
                                                            add_bias_kv=False,
                                                            add_zero_attn=False).to(device)
 
-        self.embed_tokens = nn.Embedding(self.audio_encoder.config.vocab_size, 256).to(device)
         self.num_classes = num_classes
         self.final_classifier = TextClassificationModel(256, num_classes).to(device)
 
@@ -193,7 +196,7 @@ def main(log_name="finetuning"):
 
     if load_filename:
         model.load_state_dict(torch.load(load_filename))
-    model = model.to(device)
+    # model = model.to(device)
 
     if freeze_encoders:
         for param in model.image_encoder.parameters():

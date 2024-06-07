@@ -2,7 +2,7 @@ import whisper
 import glob
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
-import torchaudio
+# import torchaudio
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, ToPILImage, Normalize
 import cv2
 import time
@@ -125,8 +125,8 @@ if __name__ == '__main__':
         plt.imsave(f"mel_{i+1}.jpg", mel, cmap="viridis")
         # print(f"Min, Max for mel: {mel.min(), mel.max()}")
     
-        if "audios_raw" in data:
-            torchaudio.save(f"audio_{i+1}.wav", data["audios_raw"][0].unsqueeze(0), 96000)
+        # if "audios_raw" in data:
+        #     torchaudio.save(f"audio_{i+1}.wav", data["audios_raw"][0].unsqueeze(0), 96000)
                 
         if i == 1:
             break
