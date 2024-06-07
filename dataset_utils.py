@@ -6,6 +6,7 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, ToPILImage, Normalize
 import cv2
 import time
+import numpy as np
 
 
 def _convert_image_to_rgb(image):
@@ -25,19 +26,21 @@ def _transform(n_px):
 
 
 class GreatestHitsDataset(Dataset):
-    def __init__(self, root_dir="./vis-data-256", audio_length=5):
+    def __init__(self, root_dir="./vis-data-256", audio_length=5, use_cached=True):
         self.root_dir = root_dir
         self.transform = _transform(224)
         # self.transform_to_tensor = T.ToTensor()
         self.audio_rate = 96000
         self.audio_length = audio_length
+        self.use_cached = use_cached
+        self.dataset_cache_dir = root_dir + "-processed"
     
         self.times_info = {}
         for file in sorted(glob.glob(root_dir + "/*_times.txt")):
             with open(file, "r") as f:
                 data = f.readlines()
                 data = [line.strip().split() for line in data]
-                data = [(float(line[0]), line[1]) for line in data if line[1] != "None"]
+                data = [(float(line[0]), line[1]) for line in data if (line[1] != "None") and (line[2] == "hit")]
                 self.times_info[file.split("/")[-1].split("_")[0]] = data
                 
         self.all_material_names = set()
@@ -62,10 +65,6 @@ class GreatestHitsDataset(Dataset):
                 idx -= len(self.times_info[key])
         
         date_time = key
-        # frames, audio, metadata = torchvision.io.read_video(f"./vis-data-256/{date_time}_denoised.mp4")
-        # Loading single frame with cv2 for faster frame access compared to loading whole video
-        cap = cv2.VideoCapture(self.root_dir + f"/{date_time}_denoised.mp4")
-        audio = whisper.load_audio(self.root_dir + f"/{date_time}_denoised.wav", self.audio_rate)
         
         frames_info = self.times_info[date_time]
         frame_timestamp = frames_info[idx][0]
@@ -73,27 +72,40 @@ class GreatestHitsDataset(Dataset):
         material_index = self.mat_to_ind[material_name]
         material_index = torch.tensor(material_index)
 
-        audio_start_time = frame_timestamp - self.audio_length / 2
-        audio_start_idx = int(audio_start_time * self.audio_rate)
-        audio = audio[audio_start_idx : audio_start_idx + self.audio_rate * self.audio_length]
-        audio = whisper.pad_or_trim(audio, self.audio_rate * self.audio_length)
-        # print(date_time, frame_timestamp, audio.shape)
-        mel = whisper.log_mel_spectrogram(audio)
+        if self.use_cached:
+            mel = np.load(f"{self.dataset_cache_dir}/{date_time}_{frame_timestamp}_mel.npy")
+            mel = torch.tensor(mel)
+            # Load jpg
+            frame = cv2.imread(f"{self.dataset_cache_dir}/{date_time}_{frame_timestamp}_frame.jpg")
+            frame = self.transform(frame)
+        else:
+            # frames, audio, metadata = torchvision.io.read_video(f"./vis-data-256/{date_time}_denoised.mp4")
+            # Loading single frame with cv2 for faster frame access compared to loading whole video
+            cap = cv2.VideoCapture(self.root_dir + f"/{date_time}_denoised.mp4")
+            audio = whisper.load_audio(self.root_dir + f"/{date_time}_denoised.wav", self.audio_rate)
 
-        cap.set(cv2.CAP_PROP_POS_MSEC, frame_timestamp * 1000)
-        ret, frame = cap.read()
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        # frame = (self.transform_to_tensor(frame) * 255).to(torch.uint8)
-        frame = self.transform(frame)
-        
-        cap.release()
+            audio_start_time = frame_timestamp - self.audio_length / 2
+            audio_start_idx = int(audio_start_time * self.audio_rate)
+            audio = audio[audio_start_idx : audio_start_idx + self.audio_rate * self.audio_length]
+            audio = whisper.pad_or_trim(audio, self.audio_rate * self.audio_length)
+            # print(date_time, frame_timestamp, audio.shape)
+            mel = whisper.log_mel_spectrogram(audio)
+
+            cap.set(cv2.CAP_PROP_POS_MSEC, frame_timestamp * 1000)
+            ret, frame = cap.read()
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # frame = (self.transform_to_tensor(frame) * 255).to(torch.uint8)
+            frame = self.transform(frame)
+            
+            cap.release()
+            
         # return {"images": frame, "audios": mel, "audios_raw":audio, "materials": material_index}
         return {"images": frame, "audios": mel, "materials": material_index}
     
 
 # Create DataLoader
-def create_dataloaders(root_dir="./vis-data-256", batch_size=4, val_ratio=0.05):
-    dataset = GreatestHitsDataset(root_dir)
+def create_dataloaders(root_dir="./vis-data-256", batch_size=4, val_ratio=0.05, use_cached=True):
+    dataset = GreatestHitsDataset(root_dir, use_cached=use_cached)
     print(f"\nDataset size: {len(dataset)}\n")
 
     val_size = int(val_ratio * len(dataset))
