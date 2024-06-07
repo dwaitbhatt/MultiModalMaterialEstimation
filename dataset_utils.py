@@ -6,7 +6,6 @@ from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, ToPILImage, Normalize
 import cv2
 import time
-import matplotlib.pyplot as plt
 
 
 def _convert_image_to_rgb(image):

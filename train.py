@@ -1,4 +1,4 @@
-from transformers import WhisperConfig, WhisperModel, CLIPConfig, CLIPModel, AutoTokenizer, AutoModel, AutoForCausalLM
+from transformers import WhisperConfig, WhisperModel, CLIPConfig, CLIPModel, AutoTokenizer, AutoModel, AutoModelForCausalLM
 import whisper
 import torch
 import torch.nn as nn
@@ -6,9 +6,11 @@ from dataset_utils import _transform, create_dataloaders
 import time
 from tqdm.auto import tqdm
 import wandb
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+import os
 import torch.nn as nn
+
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class TextClassificationModel(nn.Module):
@@ -41,16 +43,16 @@ class ImageAudioModel(nn.Module):
         self.audio_encoder = WhisperModel.from_pretrained(self.audio_encoder_name).to(device)
 
         self.image_h_dim = 512
-        self.audio_h_dim = 256
+        self.audio_h_dim = 512
 
         self.image_seq_len = 50
         self.audio_seq_len = 1500
         
         self.aligned_seq_len = 32
     
-        llm = AutoForCausalLM.from_pretrained(self.llm_name)
-        self.embed_tokens = llm.model.embed_tokens
-        self.llm_dim = self.embed_tokens.shape[1]
+        llm = AutoModelForCausalLM.from_pretrained(self.llm_name)
+        self.embed_tokens = llm.model.embed_tokens.to(device)
+        self.llm_dim = self.embed_tokens.weight.shape[1]
 
         self.project_image = nn.Conv1d(self.image_seq_len, self.aligned_seq_len,
                                        kernel_size=1, stride=1).to(device)
@@ -63,19 +65,19 @@ class ImageAudioModel(nn.Module):
         self.transform_audio_to_hidden = nn.Linear(self.audio_h_dim,
                                                    self.llm_dim).to(device)
         
-        self.image_align_attention = nn.MultiheadAttention(256,
+        self.image_align_attention = nn.MultiheadAttention(self.llm_dim,
                                                            4 * 2,
                                                            dropout=0,
                                                            add_bias_kv=False,
                                                            add_zero_attn=False).to(device)
-        self.audio_align_attention = nn.MultiheadAttention(256,
+        self.audio_align_attention = nn.MultiheadAttention(self.llm_dim,
                                                            4 * 2,
                                                            dropout=0,
                                                            add_bias_kv=False,
                                                            add_zero_attn=False).to(device)
 
         self.num_classes = num_classes
-        self.final_classifier = TextClassificationModel(256, num_classes).to(device)
+        self.final_classifier = TextClassificationModel(self.llm_dim, num_classes).to(device)
 
     def forward(self, inputs, inputs_common):
         image_features = self.image_encoder.visual_projection(
@@ -184,7 +186,7 @@ def evaluate(model, dataloader, step):
 def main(log_name="finetuning"):
     global inputs_common
 
-    train_loader, val_loader = create_dataloaders(root_dir="/home/GreatestHits/vis-data-256", batch_size=batch_size,
+    train_loader, val_loader = create_dataloaders(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", batch_size=batch_size,
                                                   val_ratio=eval_ratio)
 
     bs = train_loader.batch_size
@@ -276,7 +278,7 @@ def main(log_name="finetuning"):
 if __name__ == '__main__':
     # dummy_test()
 
-    experiment_name = "partial_finetuning"
+    experiment_name = "alignment_training"
     batch_size = 1
     num_epochs = 10
     eval_ratio = 0.01
