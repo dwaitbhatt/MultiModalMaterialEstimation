@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 import os
+import json
 
 
 def _convert_image_to_rgb(image):
@@ -38,15 +39,20 @@ class GreatestHitsDataset(Dataset):
         self.audio_length = audio_length
         self.use_cached = use_cached
         self.dataset_cache_dir = root_dir + "-processed"
-    
-        self.times_info = {}
-        for file in sorted(glob.glob(root_dir + "/*_times.txt")):
-            with open(file, "r") as f:
-                data = f.readlines()
-                data = [line.strip().split() for line in data]
-                data = [(float(line[0]), line[1]) for line in data if (line[1] != "None") and (line[2] == "hit")]
-                self.times_info[file.split("/")[-1].split("_")[0]] = data
-                
+        
+        if use_cached:
+            # Load times_info from cached json
+            with open(f"{self.dataset_cache_dir}/times_info.json", "r") as f:
+                self.times_info = json.load(f)
+        else:
+            self.times_info = {}
+            for file in sorted(glob.glob(root_dir + "/*_times.txt")):
+                with open(file, "r") as f:
+                    data = f.readlines()
+                    data = [line.strip().split() for line in data]
+                    data = [(float(line[0]), line[1]) for line in data if (line[1] != "None") and (line[2] == "hit")]
+                    self.times_info[file.split("/")[-1].split("_")[0]] = data
+                            
         self.all_material_names = set()
         for _, frame_info in self.times_info.items():
             self.all_material_names.update([frame[1] for frame in frame_info])
@@ -124,12 +130,18 @@ def create_dataloaders(root_dir="./vis-data-256", batch_size=4, val_ratio=0.05, 
     
 def test_cached_vs_uncached_datasets(n_test=5, batch_size=4, compare_diff_images=False):
     print("Loading cached dataset...")
+    start_time = time.time()
     cached_dataset = GreatestHitsDataset(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", use_cached=True)
+    print(f"Time taken to initialize cached dataset: {time.time() - start_time:.2f} seconds")
+
     print("Loading uncached dataset...")
+    start_time = time.time()
     uncached_dataset = GreatestHitsDataset(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", use_cached=False)
+    print(f"Time taken to initialize uncached dataset: {time.time() - start_time:.2f} seconds")
     
     num_test_samples = n_test
     sample_indices = np.random.choice(len(cached_dataset), num_test_samples, replace=False)
+    all_passed = True
     for i in sample_indices:
         cached_data = cached_dataset[i]
         uncached_data = uncached_dataset[i]
@@ -150,12 +162,13 @@ def test_cached_vs_uncached_datasets(n_test=5, batch_size=4, compare_diff_images
                     uncached_img = uncached_data[key].permute(1, 2, 0).numpy().clip(0,1)
                     plt.imsave(f"cached_img_{i+1}.jpg", cached_img)
                     plt.imsave(f"uncached_img_{i+1}.jpg", uncached_img)
-                                
+                all_passed = False
                 break
         else:
             print(f"Test {i+1} passed")
     
-    print(f"All {num_test_samples} tests passed, datasets are same!")
+    if all_passed:
+        print(f"All {num_test_samples} tests passed, datasets are same!")
     
     cached_loader = DataLoader(cached_dataset, batch_size=batch_size, shuffle=True)
     start_time = time.time()
@@ -228,7 +241,7 @@ def check_if_entire_dataset_cached():
                 uncached["frame"].append((frame_timestamp, frame[0]))
     
     if len(uncached["mel"]) == 0 and len(uncached["frame"]) == 0:
-        print("Entire dataset cached!")
+        print("Entire cached dataset is available!")
     else:
         print(f"Mel uncached: {len(uncached['mel'])}, Frame uncached: {len(uncached['frame'])}")
         print(f"Mel uncached: {uncached['mel']}, \nFrame uncached: {uncached['frame']}")
@@ -245,5 +258,5 @@ def test_all_batch_sizes_shape():
 
 if __name__ == '__main__':
     # test_cached_vs_uncached_datasets()
-    # check_if_entire_dataset_cached()
-    test_all_batch_sizes_shape()
+    check_if_entire_dataset_cached()
+    # test_all_batch_sizes_shape()

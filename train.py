@@ -207,13 +207,23 @@ def main(log_name="finetuning"):
     # model = model.to(device)
 
     if torch.cuda.device_count() > 1:
+        print(f"Training with batch size {batch_size} across {torch.cuda.device_count()} GPUs")
         model = nn.DataParallel(model)
+        image_encoder = model.module.image_encoder
+        image_encoder_name = model.module.image_encoder_name
+        audio_encoder = model.module.image_encoder
+        audio_encoder_name = model.module.image_encoder_name
+    else:
+        image_encoder = model.image_encoder
+        image_encoder_name = model.image_encoder_name
+        audio_encoder = model.image_encoder
+        audio_encoder_name = model.image_encoder_name
     model.train()
 
     if freeze_encoders:
-        for param in model.image_encoder.parameters():
+        for param in image_encoder.parameters():
             param.requires_grad = False
-        for param in model.audio_encoder.parameters():
+        for param in audio_encoder.parameters():
             param.requires_grad = False
 
     if log_wandb:
@@ -222,8 +232,8 @@ def main(log_name="finetuning"):
             "batch_size": bs,
             "lr": lr,
             "freeze_encoders": freeze_encoders,
-            "image_encoder": model.image_encoder_name,
-            "audio_encoder": model.audio_encoder_name,
+            "image_encoder": image_encoder_name,
+            "audio_encoder": audio_encoder_name,
             "dataset": "GreatestHits",
         })
 
@@ -248,6 +258,8 @@ def main(log_name="finetuning"):
         pbar.update(curr_epoch * len(train_loader))
     for epoch in range(curr_epoch, num_epochs):
         for i, data in enumerate(train_loader):
+            if i == len(train_loader) - 1:
+                break
             data = {k: data[k].to(device) for k in data}
 
             optimizer.zero_grad()
@@ -276,7 +288,7 @@ def main(log_name="finetuning"):
                                 'optimizer_state_dict': optimizer.state_dict()
                              }
                 val_loss, val_acc = evaluate(model, val_loader, step)
-                torch.save(checkpoint, f"model_ckpt_{epoch}_{i}_{val_acc}.pth")
+                torch.save(checkpoint, f"model_ckpt_{epoch}_{i}_{val_acc:.4f}.pth")
             step += 1
 
     checkpoint = {  
@@ -296,9 +308,9 @@ if __name__ == '__main__':
     batch_size = 4
     batch_size *= torch.cuda.device_count()
     num_epochs = 10
-    eval_ratio = 0.01
+    eval_ratio = 0.05
     load_filename = None
-    log_wandb = False
+    log_wandb = True
     freeze_encoders = True
 
     main(experiment_name)
