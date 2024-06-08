@@ -166,6 +166,8 @@ def evaluate(model, dataloader, step):
                             total=len(dataloader),
                             leave=False,
                             desc="Evaluating on validation data"):
+            if i == len(dataloader) - 1:
+                break
             data = {k: data[k].to(device) for k in data}
             output = model(data, inputs_common)
             loss = criterion(output, data["materials"])
@@ -195,10 +197,18 @@ def main(log_name="finetuning"):
     lr = 3e-4
 
     model = ImageAudioModel(num_classes=num_classes)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     if load_filename:
-        model.load_state_dict(torch.load(load_filename))
+        ckpt = torch.load(load_filename)
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     # model = model.to(device)
+
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
+    model.train()
 
     if freeze_encoders:
         for param in model.image_encoder.parameters():
@@ -228,17 +238,13 @@ def main(log_name="finetuning"):
     }
     inputs_common = {k: inputs_common[k].to(device) for k in inputs_common}
 
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    model.train()
-
     loss_values = []
     prev_time = time.time()
     pbar = tqdm(total=num_epochs * len(train_loader), desc="Training started")
     step = 0
     curr_epoch = 0
     if load_filename:
-        curr_epoch = int(load_filename.split(".")[0].split("_")[1])
+        curr_epoch = int(load_filename.split(".")[0].split("_")[2])
         pbar.update(curr_epoch * len(train_loader))
     for epoch in range(curr_epoch, num_epochs):
         for i, data in enumerate(train_loader):
@@ -259,18 +265,26 @@ def main(log_name="finetuning"):
 
             # Saving progress every 15 mins
             curr_time = time.time()
-            if curr_time - prev_time > 900:
-                prev_time = curr_time
+            # if curr_time - prev_time > 900:
+            #     prev_time = curr_time
                 # print(f"Epoch {epoch+1}, Batch {i+1}, Loss: {loss.item()}")
-                torch.save(model.state_dict(), f"model_{epoch}_{i}.pth")
-                torch.save(loss_values, "loss_history.pth")
+                # torch.save(loss_values, "loss_history.pth")
 
             if i % 5000 == 0:
-                evaluate(model, val_loader, step)
+                checkpoint = {  
+                                'model_state_dict': model.state_dict(),
+                                'optimizer_state_dict': optimizer.state_dict()
+                             }
+                val_loss, val_acc = evaluate(model, val_loader, step)
+                torch.save(checkpoint, f"model_ckpt_{epoch}_{i}_{val_acc}.pth")
             step += 1
 
-    torch.save(model.state_dict(), "final_model.pth")
-    torch.save(loss_values, "loss_history.pth")
+    checkpoint = {  
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict()
+     }
+    torch.save(checkpoint, "final_model_ckpt.pth")
+    # torch.save(loss_values, "loss_history.pth")
 
     return model
 
@@ -278,12 +292,13 @@ def main(log_name="finetuning"):
 if __name__ == '__main__':
     # dummy_test()
 
-    experiment_name = "alignment_training"
-    batch_size = 1
+    experiment_name = "alignment_training_cached"
+    batch_size = 4
+    batch_size *= torch.cuda.device_count()
     num_epochs = 10
     eval_ratio = 0.01
     load_filename = None
-    log_wandb = True
+    log_wandb = False
     freeze_encoders = True
 
     main(experiment_name)

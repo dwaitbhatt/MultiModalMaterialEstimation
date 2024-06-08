@@ -7,10 +7,14 @@ from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, ToPILI
 import cv2
 import time
 import numpy as np
+import matplotlib.pyplot as plt
+from tqdm.auto import tqdm
+import os
 
 
 def _convert_image_to_rgb(image):
     return image.convert("RGB")
+
 
 def _transform(n_px):
     return Compose([
@@ -117,12 +121,76 @@ def create_dataloaders(root_dir="./vis-data-256", batch_size=4, val_ratio=0.05, 
 
     return train_loader, val_loader
 
+    
+def test_cached_vs_uncached_datasets(n_test=5, batch_size=4, compare_diff_images=False):
+    print("Loading cached dataset...")
+    cached_dataset = GreatestHitsDataset(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", use_cached=True)
+    print("Loading uncached dataset...")
+    uncached_dataset = GreatestHitsDataset(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", use_cached=False)
+    
+    num_test_samples = n_test
+    sample_indices = np.random.choice(len(cached_dataset), num_test_samples, replace=False)
+    for i in sample_indices:
+        cached_data = cached_dataset[i]
+        uncached_data = uncached_dataset[i]
+        
+        for key in cached_data.keys():
+            if not torch.allclose(cached_data[key], uncached_data[key], atol=1e-2):
+                print(f"Test {i+1} failed")
+                print(f"{key} not equal for test {i+1} - (index {i})")
+                print(f"Shapes: {cached_data['images'].shape}, {uncached_data['images'].shape}")
+                print(f"Max: {cached_data['images'].max()}, {uncached_data['images'].max()}")
+                print(f"Min: {cached_data['images'].min()}, {uncached_data['images'].min()}")
+                print(f"Mean: {cached_data['images'].mean()}, {uncached_data['images'].mean()}")
+                print(f"Std: {cached_data['images'].std()}, {uncached_data['images'].std()}")
+                
+                if key == "images" and compare_diff_images:
+                    # Save both images for comparison
+                    cached_img = cached_data[key].permute(1, 2, 0).numpy().clip(0,1)
+                    uncached_img = uncached_data[key].permute(1, 2, 0).numpy().clip(0,1)
+                    plt.imsave(f"cached_img_{i+1}.jpg", cached_img)
+                    plt.imsave(f"uncached_img_{i+1}.jpg", uncached_img)
+                                
+                break
+        else:
+            print(f"Test {i+1} passed")
+    
+    print(f"All {num_test_samples} tests passed, datasets are same!")
+    
+    cached_loader = DataLoader(cached_dataset, batch_size=batch_size, shuffle=True)
+    start_time = time.time()
+    avg_cached_time = 0
+    for i, data in enumerate(cached_loader):
+        print([data[k].shape for k in data])
+        time_taken = time.time() - start_time
+        print(f"Time taken to load cached batch {i+1}: {time_taken:.2f} seconds")
+        avg_cached_time += time_taken        
+        if i == n_test - 1:
+            break        
+        start_time = time.time()
+    print(f"\nAverage time taken to load a cached batch: {avg_cached_time / n_test:.2f} seconds\n")
+    
+    uncached_loader = DataLoader(uncached_dataset, batch_size=batch_size, shuffle=True)
+    start_time = time.time()
+    avg_time = 0
+    for i, data in enumerate(uncached_loader):
+        print([data[k].shape for k in data])
+        time_taken = time.time() - start_time
+        print(f"Time taken to load batch {i+1}: {time_taken:.2f} seconds")
+        avg_time += time_taken
+        if i == n_test - 1:
+            break
+        start_time = time.time()
+    print(f"\nAverage time taken to load a batch: {avg_time / n_test:.2f} seconds")
 
-if __name__ == '__main__':
+    print(f"\nAverage speedup by caching: {avg_time / avg_cached_time:.2f}x")        
+
+
+def test_dataloader():
     batch_size = 4
     
     start_time = time.time()
-    train_loader, _ = create_dataloaders(root_dir="/home/GreatestHits/vis-data-256", batch_size=batch_size)
+    train_loader, _ = create_dataloaders(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", batch_size=batch_size)
     print(f"Time taken to create dataloader (with batch size {batch_size}): {time.time() - start_time:.2f} seconds")
     
     start_time = time.time()
@@ -143,3 +211,39 @@ if __name__ == '__main__':
             break
         
         start_time = time.time()
+
+
+def check_if_entire_dataset_cached():
+    dataset = GreatestHitsDataset(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", use_cached=True)
+    uncached = {"frame": [], "mel": []}
+    for frame_timestamp, frame_info in tqdm(dataset.times_info.items(), desc="Checking cached dataset"):
+        for frame in frame_info:
+            mel_path = f"{dataset.dataset_cache_dir}/{frame_timestamp}_{frame[0]}_mel.npy"
+            frame_path = f"{dataset.dataset_cache_dir}/{frame_timestamp}_{frame[0]}_frame.jpg"
+            if not os.path.exists(mel_path):
+                print(f"Mel not cached for {frame_timestamp}_{frame[0]}")
+                uncached["mel"].append((frame_timestamp, frame[0]))
+            if not os.path.exists(frame_path):
+                print(f"Frame not cached for {frame_timestamp}_{frame[0]}")
+                uncached["frame"].append((frame_timestamp, frame[0]))
+    
+    if len(uncached["mel"]) == 0 and len(uncached["frame"]) == 0:
+        print("Entire dataset cached!")
+    else:
+        print(f"Mel uncached: {len(uncached['mel'])}, Frame uncached: {len(uncached['frame'])}")
+        print(f"Mel uncached: {uncached['mel']}, \nFrame uncached: {uncached['frame']}")
+
+
+def test_all_batch_sizes_shape():
+    _, val_loader = create_dataloaders(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", batch_size=4, use_cached=True)
+    for i, data in tqdm(enumerate(val_loader)):
+        if i < len(val_loader) - 5:
+            continue
+        print(f"Batch {i+1} shapes:")
+        print([data[k].shape for k in data])
+
+
+if __name__ == '__main__':
+    # test_cached_vs_uncached_datasets()
+    # check_if_entire_dataset_cached()
+    test_all_batch_sizes_shape()
