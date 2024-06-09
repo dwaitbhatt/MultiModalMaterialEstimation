@@ -6,9 +6,8 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader, random_split
 import os
 from pathlib import Path
-import clip
-from tqdm import tqdm
 import pickle
+import json
 import wandb
 import os
 
@@ -21,7 +20,7 @@ val_ratio = 0.05
 wandb.init(
     # set the wandb project where this run will be logged
     project="material-estimation",
-    name="clip_finetune",
+    name="clip_finetune_full",
     # track hyperparameters and run metadata
     config={
         "learning_rate": 1e-5,
@@ -37,12 +36,12 @@ device = torch.device('cuda') if torch.cuda.is_available() else torch.device("cp
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-# freezing the encoders
-for params in model.text_model.children():
-    params.requires_grad = False
+# # freezing the encoders
+# for params in model.text_model.children():
+#     params.requires_grad = False
     
-for params in model.vision_model.children():
-    params.requires_grad = False
+# for params in model.vision_model.children():
+#     params.requires_grad = False
     
     
 def convert_models_to_fp32(model):
@@ -50,15 +49,12 @@ def convert_models_to_fp32(model):
         p.data = p.data.float()
         if p.grad is None: continue
         p.grad.data = p.grad.data.float()
-        
-
 
 
 class GreatestHitsDataset(Dataset):
     def __init__(self, root_path):
         self.root = root_path
         self.dataset_cache_dir = root_path + "-processed"
-        self.train = "train" if train else "test"
         # self.all_frames = os.listdir(self.root.joinpath(f"{self.train}_frames"))
         # with open(self.root.joinpath(f"{self.train}_labels.pkl"), "rb") as f:
         #     self.labels_map = pickle.load(f)  
@@ -119,14 +115,14 @@ model.to(device)
 # val_dataset = GreatestHitsDataset("../vis-data-256", train=False)
 # train_dataloader = DataLoader(train_dataset, batch_size=4, shuffle=True)
 # val_dataloader = DataLoader(val_dataset, batch_size=16, shuffle=False)
-dataset = GreatestHitsDataset("../vis-data-256", use_cached=True)
+dataset = GreatestHitsDataset("../vis-data-256")
 
 val_size = int(val_ratio * len(dataset))
 train_size = len(dataset) - val_size
 train_set, val_set = random_split(dataset, [train_size, val_size])
 
-train_dataloader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=True)
+train_dataloader = DataLoader(train_set, batch_size=batch_size, shuffle=True, pin_memory=True)
+val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=True, pin_memory=True)
 
 
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-5,betas=(0.9,0.98),eps=1e-6,weight_decay=0.2)
@@ -144,7 +140,7 @@ best_val_loss = float('inf')
 for epoch in range(num_epochs):
     total_loss = 0
     model.train()
-    for batch in train_dataloader:
+    for i, batch in enumerate(train_dataloader):
         optimizer.zero_grad()
 
         curr_input, label = batch
@@ -166,41 +162,42 @@ for epoch in range(num_epochs):
         wandb.log({"train/loss": loss.item()})
         
     
-    
-    val_loss = 0
-    model.eval()
-    with torch.no_grad():
-        for batch in val_dataloader:
-            
-            curr_input, label = batch
-            tf = {'input_ids': text_input['input_ids'][label].to(device), 
-                  'attention_mask': text_input['attention_mask'][label].to(device)
-                 }
-            vi = curr_input['pixel_values'].squeeze(1).to(device)
-            output = model(pixel_values=vi, **tf)
-            logits_per_image, logits_per_text = output.logits_per_image, output.logits_per_text
-            n = logits_per_image.shape[0]
+        if i % 1000 == 0:
+            val_loss = 0
+            true = 0
+            model.eval()
+            with torch.no_grad():
+                for batch in val_dataloader:
 
-            # Compute loss
-            ground_truth = torch.arange(n,dtype=torch.long,device=device)
-            loss = (loss_img(logits_per_image,ground_truth) + loss_txt(logits_per_text,ground_truth))/2
-            val_loss += loss.item()
-            
-            # Compute accuracy
-            vf = output["image_embeds"]
-            tf = output["text_embeds"]
-            probs = torch.softmax(ftvf @ tf.T, dim=1)
-            max_probs = probs.argmax(dim=1)
-            true += torch.sum(max_probs == label).item()
+                    curr_input, label = batch
+                    tf = {'input_ids': text_input['input_ids'][label].to(device), 
+                          'attention_mask': text_input['attention_mask'][label].to(device)
+                         }
+                    vi = curr_input['pixel_values'].squeeze(1).to(device)
+                    output = model(pixel_values=vi, **tf)
+                    logits_per_image, logits_per_text = output.logits_per_image, output.logits_per_text
+                    n = logits_per_image.shape[0]
+
+                    # Compute loss
+                    ground_truth = torch.arange(n,dtype=torch.long,device=device)
+                    loss = (loss_img(logits_per_image,ground_truth) + loss_txt(logits_per_text,ground_truth))/2
+                    val_loss += loss.item()
+
+                    # Compute accuracy
+                    vf = output["image_embeds"]
+                    tf = output["text_embeds"]
+                    probs = torch.softmax(vf @ tf.T, dim=1)
+                    max_probs = probs.argmax(dim=1)
+                    true += torch.sum(max_probs == label).item()
 
     
-    avg_val_loss = val_loss / len(val_dataloader)
-    avg_val_acc = true / len(val_dataloader)
-    avg_train_loss = total_loss / len(train_dataloader)
-    wandb.log({"epoch": epoch, "train/avg_loss": avg_train_loss, "val/loss": avg_val_loss, "val/acc": avg_val_acc})
-    if best_val_loss > avg_val_loss:
-        best_val_loss = avg_val_loss
-        model.save_pretrained(Path("gh_model"))
+            avg_val_loss = val_loss / len(val_dataloader)
+            avg_val_acc = true / len(val_dataloader)
+            avg_train_loss = total_loss / len(train_dataloader)
+            wandb.log({"epoch": epoch, "train/avg_loss": avg_train_loss, "val/loss": avg_val_loss, "val/acc": avg_val_acc})
+            if best_val_loss > avg_val_loss:
+                best_val_loss = avg_val_loss
+                model.save_pretrained(Path("gh_model"))
         
     
 del model
