@@ -131,12 +131,12 @@ def create_dataloaders(root_dir="./vis-data-256", batch_size=4, val_ratio=0.05, 
 def test_cached_vs_uncached_datasets(n_test=5, batch_size=4, compare_diff_images=False):
     print("Loading cached dataset...")
     start_time = time.time()
-    cached_dataset = GreatestHitsDataset(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", use_cached=True)
+    cached_dataset = GreatestHitsDataset(root_dir=dataset_dir, use_cached=True)
     print(f"Time taken to initialize cached dataset: {time.time() - start_time:.2f} seconds")
 
     print("Loading uncached dataset...")
     start_time = time.time()
-    uncached_dataset = GreatestHitsDataset(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", use_cached=False)
+    uncached_dataset = GreatestHitsDataset(root_dir=dataset_dir, use_cached=False)
     print(f"Time taken to initialize uncached dataset: {time.time() - start_time:.2f} seconds")
     
     num_test_samples = n_test
@@ -203,7 +203,7 @@ def test_dataloader():
     batch_size = 4
     
     start_time = time.time()
-    train_loader, _ = create_dataloaders(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", batch_size=batch_size)
+    train_loader, _ = create_dataloaders(root_dir=dataset_dir, batch_size=batch_size)
     print(f"Time taken to create dataloader (with batch size {batch_size}): {time.time() - start_time:.2f} seconds")
     
     start_time = time.time()
@@ -227,7 +227,7 @@ def test_dataloader():
 
 
 def check_if_entire_dataset_cached():
-    dataset = GreatestHitsDataset(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", use_cached=True)
+    dataset = GreatestHitsDataset(root_dir=dataset_dir, use_cached=True)
     uncached = {"frame": [], "mel": []}
     for frame_timestamp, frame_info in tqdm(dataset.times_info.items(), desc="Checking cached dataset"):
         for frame in frame_info:
@@ -248,7 +248,7 @@ def check_if_entire_dataset_cached():
 
 
 def test_all_batch_sizes_shape():
-    _, val_loader = create_dataloaders(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", batch_size=4, use_cached=True)
+    _, val_loader = create_dataloaders(root_dir=dataset_dir, batch_size=4, use_cached=True)
     for i, data in tqdm(enumerate(val_loader)):
         if i < len(val_loader) - 5:
             continue
@@ -257,6 +257,8 @@ def test_all_batch_sizes_shape():
 
 
 if __name__ == '__main__':
+    dataset_dir = "./vis-data-256"
+
     # test_cached_vs_uncached_datasets()
     check_if_entire_dataset_cached()
     # test_all_batch_sizes_shape()

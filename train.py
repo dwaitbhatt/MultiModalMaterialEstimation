@@ -3,8 +3,9 @@ import whisper
 import torch
 import torch.nn as nn
 from dataset_utils import _transform, create_dataloaders
-import time
 from tqdm.auto import tqdm
+import time
+import pathlib
 import wandb
 import os
 import torch.nn as nn
@@ -188,7 +189,7 @@ def evaluate(model, dataloader, step):
 def main(log_name="finetuning"):
     global inputs_common
 
-    train_loader, val_loader = create_dataloaders(root_dir="/mat_est_vol/MultiModalMaterialEstimation/vis-data-256", batch_size=batch_size,
+    train_loader, val_loader = create_dataloaders(root_dir="./vis-data-256", batch_size=batch_size,
                                                   val_ratio=eval_ratio)
 
     bs = train_loader.batch_size
@@ -248,8 +249,6 @@ def main(log_name="finetuning"):
     }
     inputs_common = {k: inputs_common[k].to(device) for k in inputs_common}
 
-    loss_values = []
-    prev_time = time.time()
     pbar = tqdm(total=num_epochs * len(train_loader), desc="Training started")
     step = 0
     curr_epoch = 0
@@ -268,19 +267,10 @@ def main(log_name="finetuning"):
             loss.backward()
             optimizer.step()
 
-            loss_values.append(loss.item())
-
             if log_wandb:
                 wandb.log({"train/loss": loss.item()}, step)
             pbar.update(1)
             pbar.set_description(f"Epoch {epoch + 1}, Batch {i + 1}, Loss: {loss.item():.4f}")
-
-            # Saving progress every 15 mins
-            curr_time = time.time()
-            # if curr_time - prev_time > 900:
-            #     prev_time = curr_time
-                # print(f"Epoch {epoch+1}, Batch {i+1}, Loss: {loss.item()}")
-                # torch.save(loss_values, "loss_history.pth")
 
             if i % 5000 == 0:
                 checkpoint = {  
@@ -288,14 +278,14 @@ def main(log_name="finetuning"):
                                 'optimizer_state_dict': optimizer.state_dict()
                              }
                 val_loss, val_acc = evaluate(model, val_loader, step)
-                torch.save(checkpoint, f"model_ckpt_{epoch}_{i}_{val_acc:.4f}.pth")
+                torch.save(checkpoint, save_dir + f"model_ckpt_{epoch}_{i}_{val_acc:.4f}.pth")
             step += 1
 
     checkpoint = {  
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict()
      }
-    torch.save(checkpoint, "final_model_ckpt.pth")
+    torch.save(checkpoint, save_dir + "final_model_ckpt.pth")
     # torch.save(loss_values, "loss_history.pth")
 
     return model
@@ -304,13 +294,25 @@ def main(log_name="finetuning"):
 if __name__ == '__main__':
     # dummy_test()
 
-    experiment_name = "alignment_training_cached"
-    batch_size = 4
+    experiment_name = "alignment_training_cached_2"
+    batch_size = 1
     batch_size *= torch.cuda.device_count()
     num_epochs = 10
     eval_ratio = 0.05
     load_filename = None
     log_wandb = True
     freeze_encoders = True
+
+    save_dir = pathlib.Path(__file__).resolve().parent
+    save_dir = save_dir / 'ckpts' / time.strftime("%m.%d.%Y")
+    save_subdir = '_'.join([
+        time.strftime("%H-%M-%S"),
+        experiment_name
+    ])
+    save_dir = save_dir / save_subdir
+    save_dir = str(save_dir) + "/"
+
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
 
     main(experiment_name)
