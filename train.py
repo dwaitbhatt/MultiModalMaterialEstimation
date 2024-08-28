@@ -9,6 +9,8 @@ import pathlib
 import wandb
 import os
 import torch.nn as nn
+import json
+import argparse
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -294,14 +296,25 @@ def main(log_name="finetuning"):
 if __name__ == '__main__':
     # dummy_test()
 
-    experiment_name = "alignment_training_cached_2"
-    batch_size = 1
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", help="Path to config file")
+    args = parser.parse_args()
+    
+    try:
+        with open(args.config) as f:
+            config_params = json.load(f)
+            experiment_name = config_params.get("experiment_name", "alignment_training_cached")
+            batch_size = config_params.get("batch_size", 4)
+            num_epochs = config_params.get("num_epochs", 10)
+            eval_ratio = config_params.get("eval_ratio", 0.05)
+            load_filename = config_params.get("load_filename", None)
+            log_wandb = config_params.get("log_wandb", True)
+            freeze_encoders = config_params.get("freeze_encoders", True)
+    except FileNotFoundError:
+        print(f"{args.config} file not found. Please make sure the file exists in the current directory.")
+        exit(1)
+
     batch_size *= torch.cuda.device_count()
-    num_epochs = 10
-    eval_ratio = 0.05
-    load_filename = None
-    log_wandb = True
-    freeze_encoders = True
 
     save_dir = pathlib.Path(__file__).resolve().parent
     save_dir = save_dir / 'ckpts' / time.strftime("%m.%d.%Y")

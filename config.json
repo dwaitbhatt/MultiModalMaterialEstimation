@@ -1,0 +1,9 @@
+{
+    "experiment_name": "alignment_training_cached_3",
+    "batch_size": 4,
+    "num_epochs": 10,
+    "eval_ratio": 0.05,
+    "load_filename": null,
+    "log_wandb": true,
+    "freeze_encoders": true
+}
