@@ -1,3 +1,4 @@
+from collections import OrderedDict
 import whisper
 import glob
 import torch
@@ -31,7 +32,7 @@ def _transform(n_px):
 
 
 class GreatestHitsDataset(Dataset):
-    def __init__(self, root_dir="./vis-data-256", audio_length=5, use_cached=True):
+    def __init__(self, root_dir="./vis-data-256", audio_length=5, use_cached=True, test=False):
         self.root_dir = root_dir
         self.transform = _transform(224)
         # self.transform_to_tensor = T.ToTensor()
@@ -43,9 +44,15 @@ class GreatestHitsDataset(Dataset):
         if use_cached:
             # Load times_info from cached json
             with open(f"{self.dataset_cache_dir}/times_info.json", "r") as f:
-                self.times_info = json.load(f)
+                times_info = json.load(f)
+
+            if test:
+                with open(f"test_set_times_info.json", "r") as f:
+                    self.times_info = json.load(f)
+            else:
+                self.times_info = times_info
         else:
-            self.times_info = {}
+            self.times_info = OrderedDict()
             for file in sorted(glob.glob(root_dir + "/*_times.txt")):
                 with open(file, "r") as f:
                     data = f.readlines()
@@ -54,7 +61,7 @@ class GreatestHitsDataset(Dataset):
                     self.times_info[file.split("/")[-1].split("_")[0]] = data
                             
         self.all_material_names = set()
-        for _, frame_info in self.times_info.items():
+        for _, frame_info in times_info.items():
             self.all_material_names.update([frame[1] for frame in frame_info])
 
         self.all_material_names = sorted(list(self.all_material_names))
@@ -67,15 +74,18 @@ class GreatestHitsDataset(Dataset):
             total_len += len(self.times_info[key])
         return total_len
     
-    def __getitem__(self, idx):
+    def _dataset_idx_to_times_info_key_idx(self, idx):
         for key in self.times_info.keys():
             if idx < len(self.times_info[key]):
                 break
             else:
                 idx -= len(self.times_info[key])
-        
         date_time = key
-        
+        return date_time, idx
+
+    def __getitem__(self, idx):
+        date_time, idx = self._dataset_idx_to_times_info_key_idx(idx)
+
         frames_info = self.times_info[date_time]
         frame_timestamp = frames_info[idx][0]
         material_name = frames_info[idx][1]
@@ -114,16 +124,20 @@ class GreatestHitsDataset(Dataset):
     
 
 # Create DataLoader
-def create_dataloaders(root_dir="./vis-data-256", batch_size=4, val_ratio=0.05, use_cached=True):
-    dataset = GreatestHitsDataset(root_dir, use_cached=use_cached)
-    print(f"\nDataset size: {len(dataset)}\n")
+def create_dataloaders(root_dir="./vis-data-256", batch_size=4, val_ratio=0.05, use_cached=True, test=False):
+    dataset = GreatestHitsDataset(root_dir, use_cached=use_cached, test=test)
+    print(f"\n{'Test' if test else 'Training'} dataset size: {len(dataset)}\n")
 
-    val_size = int(val_ratio * len(dataset))
-    train_size = len(dataset) - val_size
-    train_set, val_set = random_split(dataset, [train_size, val_size])
+    if test:
+        train_set = dataset
+        val_set = None
+    else:
+        val_size = int(val_ratio * len(dataset))
+        train_size = len(dataset) - val_size
+        train_set, val_set = random_split(dataset, [train_size, val_size])
     
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=batch_size, shuffle=True) if val_set is not None else None 
 
     return train_loader, val_loader
 

@@ -1,0 +1,7 @@
+{
+    "experiment_name": "testing_material_estimation",
+    "batch_size": 1,
+    "ckpt_path": "ckpt.pth",
+    "freeze_encoders": true,
+    "data_path": "./vis-data-256"
+}

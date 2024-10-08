@@ -1,4 +1,4 @@
-from transformers import WhisperConfig, WhisperModel, CLIPConfig, CLIPModel, AutoTokenizer, AutoModel, AutoModelForCausalLM
+from transformers import WhisperModel, CLIPModel, AutoTokenizer, AutoModelForCausalLM
 import whisper
 import torch
 import torch.nn as nn
@@ -8,9 +8,9 @@ import time
 import pathlib
 import wandb
 import os
-import torch.nn as nn
 import json
 import argparse
+import gc
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,9 +31,9 @@ class TextClassificationModel(nn.Module):
         return x
 
 
-class ImageAudioModel(nn.Module):
-    def __init__(self, num_classes):
-        super(ImageAudioModel, self).__init__()
+class MaterialEstimationModel(nn.Module):
+    def __init__(self, num_classes, freeze_encoders=True):
+        super(MaterialEstimationModel, self).__init__()
         # self.whisper_config = WhisperConfig()
         # self.audio_encoder = WhisperModel(self.whisper_config).to(device)
         # self.image_config = CLIPConfig()
@@ -44,6 +44,13 @@ class ImageAudioModel(nn.Module):
         self.llm_name = "llmware/bling-sheared-llama-1.3b-0.1"
         self.image_encoder = CLIPModel.from_pretrained(self.image_encoder_name).to(device)
         self.audio_encoder = WhisperModel.from_pretrained(self.audio_encoder_name).to(device)
+
+        self.freeze_encoders = freeze_encoders
+        if self.freeze_encoders:
+            for param in self.image_encoder.parameters():
+                param.requires_grad = False
+            for param in self.audio_encoder.parameters():
+                param.requires_grad = False
 
         self.image_h_dim = 512
         self.audio_h_dim = 512
@@ -124,6 +131,23 @@ class ImageAudioModel(nn.Module):
         output = self.final_classifier(input_tensor)
         return output
 
+    def get_relevant_modules(self):
+        image_nns = []
+        audio_nns = []
+        if not self.freeze_encoders:
+            image_nns.append(self.image_encoder)
+            audio_nns.append(self.audio_encoder)
+        image_nns.extend([self.project_image, self.transform_image_to_hidden, self.image_align_attention])
+        audio_nns.extend([self.project_audio, self.transform_audio_to_hidden, self.audio_align_attention])
+        return nn.ModuleList(image_nns + audio_nns + [self.final_classifier])
+
+    def weights_to_save(self):
+        modules_to_save = self.get_relevant_modules()
+        return modules_to_save.state_dict()
+
+    def load_weights(self, weights_to_load):
+        modules_to_load = self.get_relevant_modules()
+        modules_to_load.load_state_dict(weights_to_load)
 
 def dummy_test():
     audio = whisper.load_audio("./aud.wav")
@@ -152,7 +176,7 @@ def dummy_test():
     inputs = {k: inputs[k].to(device) for k in inputs}
     inputs_common = {k: inputs_common[k].to(device) for k in inputs_common}
 
-    model = ImageAudioModel(num_classes=30)
+    model = MaterialEstimationModel(num_classes=30)
     model = model.to(device)
     output = model(inputs, inputs_common)
     print(output.shape)  # Should be [batch_size, num_classes]
@@ -199,12 +223,13 @@ def main(log_name="finetuning"):
     num_classes = len(all_material_names)
     lr = 3e-4
 
-    model = ImageAudioModel(num_classes=num_classes)
+    model = MaterialEstimationModel(num_classes=num_classes, freeze_encoders=freeze_encoders)
+    # print(model)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    if load_filename:
-        ckpt = torch.load(load_filename)
+    if ckpt_path:
+        ckpt = torch.load(ckpt_path)
         model.load_state_dict(ckpt["model_state_dict"])
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     # model = model.to(device)
@@ -212,22 +237,12 @@ def main(log_name="finetuning"):
     if torch.cuda.device_count() > 1:
         print(f"Training with batch size {batch_size} across {torch.cuda.device_count()} GPUs")
         model = nn.DataParallel(model)
-        image_encoder = model.module.image_encoder
-        image_encoder_name = model.module.image_encoder_name
-        audio_encoder = model.module.image_encoder
-        audio_encoder_name = model.module.image_encoder_name
+        model_ref = model.module
     else:
-        image_encoder = model.image_encoder
-        image_encoder_name = model.image_encoder_name
-        audio_encoder = model.image_encoder
-        audio_encoder_name = model.image_encoder_name
+        model_ref = model
+    image_encoder_name = model_ref.image_encoder_name
+    audio_encoder_name = model_ref.audio_encoder_name
     model.train()
-
-    if freeze_encoders:
-        for param in image_encoder.parameters():
-            param.requires_grad = False
-        for param in audio_encoder.parameters():
-            param.requires_grad = False
 
     if log_wandb:
         wandb.init(project="material-estimation", name=log_name, config={
@@ -254,8 +269,8 @@ def main(log_name="finetuning"):
     pbar = tqdm(total=num_epochs * len(train_loader), desc="Training started")
     step = 0
     curr_epoch = 0
-    if load_filename:
-        curr_epoch = int(load_filename.split(".")[0].split("_")[2])
+    if ckpt_path:
+        curr_epoch = int(ckpt_path.split("/")[-1].split(".")[0].split("_")[2])
         pbar.update(curr_epoch * len(train_loader))
     for epoch in range(curr_epoch, num_epochs):
         for i, data in enumerate(train_loader):
@@ -276,15 +291,19 @@ def main(log_name="finetuning"):
 
             if i % 5000 == 0:
                 checkpoint = {  
-                                'model_state_dict': model.state_dict(),
+                                'model_state_dict': model_ref.weights_to_save(),
                                 'optimizer_state_dict': optimizer.state_dict()
                              }
                 val_loss, val_acc = evaluate(model, val_loader, step)
+                print(f"Validation Loss: {val_loss}, Accuracy: {val_acc}")
+                print(f"Saving model at {save_dir + f'model_ckpt_{epoch}_{i}_{val_acc:.4f}.pth'}")
                 torch.save(checkpoint, save_dir + f"model_ckpt_{epoch}_{i}_{val_acc:.4f}.pth")
             step += 1
+        gc.collect()
+        torch.cuda.empty_cache()
 
     checkpoint = {  
-        'model_state_dict': model.state_dict(),
+        'model_state_dict': model_ref.weights_to_save(),
         'optimizer_state_dict': optimizer.state_dict()
      }
     torch.save(checkpoint, save_dir + "final_model_ckpt.pth")
@@ -307,7 +326,7 @@ if __name__ == '__main__':
             batch_size = config_params.get("batch_size", 4)
             num_epochs = config_params.get("num_epochs", 10)
             eval_ratio = config_params.get("eval_ratio", 0.05)
-            load_filename = config_params.get("load_filename", None)
+            ckpt_path = config_params.get("ckpt_path", None)
             log_wandb = config_params.get("log_wandb", True)
             freeze_encoders = config_params.get("freeze_encoders", True)
     except FileNotFoundError:
